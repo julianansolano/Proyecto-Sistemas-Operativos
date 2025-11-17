@@ -1,0 +1,7 @@
+1. make
+
+2. Ejecutar controlador
+./bin/controlador /tmp/pipe_controlador 7 19 10
+
+3. Ejecutar un agente
+./bin/agente /tmp/pipe_controlador Agente1 FamiliaX 8 4
