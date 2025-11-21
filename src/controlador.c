@@ -2,15 +2,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <getopt.h>
 #include "comunes.h"
 #include "../include/estructuras.h"
 
 #define MAX_HORAS 24
 
-// Variables globales sencillas para el caso "reserva OK"
-static int horaIniSim   = 7;   // hora mínima de simulación (por defecto)
-static int horaFinSim   = 19;  // hora máxima de simulación (por defecto)
-static int aforoMax     = 50;  // personas máximas por hora (por defecto)
+// Variables globales para la simulación
+static int horaIniSim   = 7;   // hora mínima de simulación
+static int horaFinSim   = 19;  // hora máxima de simulación
+static int aforoMax     = 50;  // personas máximas por hora
+static int segHorasSim  = 1;   // segundos que dura una "hora" de simulación
 static int ocupacion[MAX_HORAS + 2];  // personas por hora
 
 /**
@@ -39,44 +41,67 @@ static int puede_reservar_en_hora(int horaSolicitada, int numPersonas) {
 }
 
 /**
- * Procesa el caso de RESERVA_OK:
- *  - actualiza la ocupación
- *  - arma la respuesta
- *  - la envía por el pipe de respuesta del agente
+ * Busca un bloque de 2 horas consecutivas dentro del rango de simulación
+ * donde quepa la cantidad de personas indicada.
+ * Devuelve la hora de inicio del bloque o -1 si no encuentra nada.
  */
-static void procesar_reserva_ok(const MensajeReserva *msg) {
-    // Actualizar ocupación en las dos horas
-    ocupacion[msg->hora_solicitada]     += msg->num_personas;
-    ocupacion[msg->hora_solicitada + 1] += msg->num_personas;
+static int buscar_bloque_dos_horas(int numPersonas, int horaInicioBusqueda) {
+    if (horaInicioBusqueda < horaIniSim) {
+        horaInicioBusqueda = horaIniSim;
+    }
 
-    // Construir la respuesta
-    RespuestaControlador resp;
-    resp.tipo = RESERVA_OK;
-    resp.hora_asignada = msg->hora_solicitada;
-    snprintf(
-        resp.mensaje,
-        sizeof(resp.mensaje),
-        "Reserva OK para familia %s de %d:00 a %d:00",
-        msg->nombre_familia,
-        msg->hora_solicitada,
-        msg->hora_solicitada + 2
-    );
+    for (int h = horaInicioBusqueda; h <= horaFinSim - 1; ++h) {
+        if (ocupacion[h] + numPersonas <= aforoMax &&
+            ocupacion[h + 1] + numPersonas <= aforoMax) {
+            return h;
+        }
+    }
+    return -1;
+}
 
-    // Abrir el pipe de respuesta del agente
+/**
+ * Envía una respuesta al agente usando el pipe indicado en el mensaje.
+ */
+static void enviar_respuesta(const MensajeReserva *msg,
+                             const RespuestaControlador *resp) {
     int fd_resp = abrir_pipe_escritura(msg->pipe_respuesta);
     if (fd_resp == -1) {
-        fprintf(stderr, "[CONTROLADOR] No se pudo abrir el pipe de respuesta del agente: %s\n",
+        fprintf(stderr,
+                "[CONTROLADOR] No se pudo abrir el pipe de respuesta del agente: %s\n",
                 msg->pipe_respuesta);
         return;
     }
 
-    ssize_t escritos = write(fd_resp, &resp, sizeof(resp));
-    if (escritos != sizeof(resp)) {
+    ssize_t escritos = write(fd_resp, resp, sizeof(*resp));
+    if (escritos != (ssize_t)sizeof(*resp)) {
         perror("[CONTROLADOR] Error escribiendo respuesta al agente");
     }
     close(fd_resp);
+}
 
-    // Mensaje en la consola del controlador
+/**
+ * Procesa el caso de RESERVA_OK.
+ */
+static void procesar_reserva_ok(const MensajeReserva *msg) {
+    ocupacion[msg->hora_solicitada]     += msg->num_personas;
+    ocupacion[msg->hora_solicitada + 1] += msg->num_personas;
+
+    RespuestaControlador resp;
+    resp.tipo = RESERVA_OK;
+    resp.hora_asignada = msg->hora_solicitada;
+
+    snprintf(
+        resp.mensaje,
+        sizeof(resp.mensaje),
+        "Reserva OK para %s (%d personas) de %d a %d",
+        msg->nombre_familia,
+        msg->num_personas,
+        msg->hora_solicitada,
+        msg->hora_solicitada + 2
+    );
+
+    enviar_respuesta(msg, &resp);
+
     printf("[CONTROLADOR] RESERVA OK -> agente=%s, familia=%s, hora=%d, personas=%d\n",
            msg->nombre_agente,
            msg->nombre_familia,
@@ -84,29 +109,142 @@ static void procesar_reserva_ok(const MensajeReserva *msg) {
            msg->num_personas);
 }
 
-int main(int argc, char *argv[]) {
-    printf("🚀 Controlador de Reservas - Iniciando (caso RESERVA_OK)...\n");
+/**
+ * Procesa el caso de RESERVA_OTRAS_HORAS.
+ */
+static void procesar_reserva_otras_horas(const MensajeReserva *msg, int nuevaHora) {
+    ocupacion[nuevaHora]     += msg->num_personas;
+    ocupacion[nuevaHora + 1] += msg->num_personas;
 
-    if (argc < 5) {
-        fprintf(stderr,
-                "Uso: %s <pipe_principal> <hora_ini> <hora_fin> <aforo_max>\n"
-                "Ejemplo: %s /tmp/pipe_controlador 7 19 50\n",
-                argv[0], argv[0]);
-     //   return EXIT_FAILURE;
+    RespuestaControlador resp;
+    resp.tipo = RESERVA_OTRAS_HORAS;
+    resp.hora_asignada = nuevaHora;
+
+    snprintf(
+        resp.mensaje,
+        sizeof(resp.mensaje),
+        "Sin cupo en %d-%d. %s reprogramada a %d-%d",
+        msg->hora_solicitada,
+        msg->hora_solicitada + 2,
+        msg->nombre_familia,
+        nuevaHora,
+        nuevaHora + 2
+    );
+
+    enviar_respuesta(msg, &resp);
+
+    printf("[CONTROLADOR] RESERVA OTRAS HORAS -> agente=%s, familia=%s, nuevaHora=%d, personas=%d\n",
+           msg->nombre_agente,
+           msg->nombre_familia,
+           nuevaHora,
+           msg->num_personas);
+}
+
+/**
+ * Procesa el caso de RESERVA_EXTEMPORANEA.
+ */
+static void procesar_reserva_extemporanea(const MensajeReserva *msg, int nuevaHora) {
+    ocupacion[nuevaHora]     += msg->num_personas;
+    ocupacion[nuevaHora + 1] += msg->num_personas;
+
+    RespuestaControlador resp;
+    resp.tipo = RESERVA_EXTEMPORANEA;
+    resp.hora_asignada = nuevaHora;
+
+    snprintf(
+        resp.mensaje,
+        sizeof(resp.mensaje),
+        "Hora %d ya pasó. %s reprogramada a %d-%d",
+        msg->hora_solicitada,
+        msg->nombre_familia,
+        nuevaHora,
+        nuevaHora + 2
+    );
+
+    enviar_respuesta(msg, &resp);
+
+    printf("[CONTROLADOR] RESERVA EXTEMPORANEA -> agente=%s, familia=%s, nuevaHora=%d, personas=%d\n",
+           msg->nombre_agente,
+           msg->nombre_familia,
+           nuevaHora,
+           msg->num_personas);
+}
+
+/**
+ * Procesa el caso de RESERVA_NEGADA.
+ */
+static void procesar_reserva_negada(const MensajeReserva *msg, const char *razon) {
+    RespuestaControlador resp;
+    resp.tipo = RESERVA_NEGADA;
+    resp.hora_asignada = -1;
+
+    snprintf(
+        resp.mensaje,
+        sizeof(resp.mensaje),
+        "Reserva negada para %s: %s",
+        msg->nombre_familia,
+        razon
+    );
+
+    enviar_respuesta(msg, &resp);
+
+    printf("[CONTROLADOR] RESERVA NEGADA -> agente=%s, familia=%s, razon=%s\n",
+           msg->nombre_agente,
+           msg->nombre_familia,
+           razon);
+}
+
+int main(int argc, char *argv[]) {
+    printf("🚀 Controlador de Reservas - Iniciando...\n");
+
+    int opt;
+    const char *pipe_principal = NULL;
+    horaIniSim  = -1;
+    horaFinSim  = -1;
+    aforoMax    = -1;
+    segHorasSim = -1;
+
+    while ((opt = getopt(argc, argv, "i:f:s:t:p:")) != -1) {
+        switch (opt) {
+        case 'i':
+            horaIniSim = atoi(optarg);
+            break;
+        case 'f':
+            horaFinSim = atoi(optarg);
+            break;
+        case 's':
+            segHorasSim = atoi(optarg);
+            break;
+        case 't':
+            aforoMax = atoi(optarg);
+            break;
+        case 'p':
+            pipe_principal = optarg;
+            break;
+        default:
+            fprintf(stderr,
+              "Uso: %s -i <hora_ini> -f <hora_fin> -s <segHoras> -t <aforo> -p <pipe_principal>\n",
+              argv[0]);
+            return EXIT_FAILURE;
+        }
     }
 
-    const char *pipe_principal = argv[1];
-    horaIniSim = atoi(argv[2]);
-    horaFinSim = atoi(argv[3]);
-    aforoMax   = atoi(argv[4]);
+    if (!pipe_principal || horaIniSim == -1 || horaFinSim == -1 ||
+        segHorasSim <= 0 || aforoMax <= 0) {
 
-    if (horaIniSim < 0 || horaFinSim > MAX_HORAS || horaIniSim >= horaFinSim) {
-        fprintf(stderr, "Rango de horas inválido.\n");
+        fprintf(stderr,
+          "Parámetros inválidos.\nUso: %s -i <hora_ini> -f <hora_fin> -s <segHoras> -t <aforo> -p <pipe_principal>\n",
+          argv[0]);
         return EXIT_FAILURE;
     }
 
-    if (aforoMax <= 0) {
-        fprintf(stderr, "Aforo máximo inválido.\n");
+    // Validar rango de horas 7 - 19 como dice el enunciado
+    if (horaIniSim < 7 || horaIniSim > 19 ||
+        horaFinSim < 7 || horaFinSim > 19 ||
+        horaIniSim >= horaFinSim) {
+
+        fprintf(stderr,
+          "Rango de simulación inválido. Debe estar entre 7 y 19, y horaIni < horaFin.\n");
         return EXIT_FAILURE;
     }
 
@@ -120,15 +258,16 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    printf("[CONTROLADOR] Parámetros: pipe=%s, horaIni=%d, horaFin=%d, aforoMax=%d\n",
-           pipe_principal, horaIniSim, horaFinSim, aforoMax);
+    printf("[CONTROLADOR] Parámetros: pipe=%s, horaIni=%d, horaFin=%d, aforoMax=%d, segHoras=%d\n",
+           pipe_principal, horaIniSim, horaFinSim, aforoMax, segHorasSim);
     printf("[CONTROLADOR] Esperando solicitudes...\n");
 
-    // Bucle principal: leer mensajes de los agentes
+    // ⚠️ Aquí podrías crear un hilo para el reloj que use segHorasSim.
+    // Por ahora solo atendemos solicitudes de los agentes.
+
     while (1) {
         int fd = abrir_pipe_lectura(pipe_principal);
         if (fd == -1) {
-            // Si falla, intentamos de nuevo
             sleep(1);
             continue;
         }
@@ -138,30 +277,54 @@ int main(int argc, char *argv[]) {
         close(fd);
 
         if (leidos == 0) {
-            // Nadie escribió; seguir esperando
             continue;
         }
-        if (leidos != sizeof(msg)) {
+        if (leidos != (ssize_t)sizeof(msg)) {
             fprintf(stderr, "[CONTROLADOR] Tamaño de mensaje inválido (%zd bytes)\n", leidos);
             continue;
         }
 
-        printf("[CONTROLADOR] Solicitud recibida -> agente=%s, familia=%s, hora=%d, personas=%d\n",
+        printf("[CONTROLADOR] Solicitud -> agente=%s, familia=%s, hora=%d, personas=%d\n",
                msg.nombre_agente,
                msg.nombre_familia,
                msg.hora_solicitada,
                msg.num_personas);
 
-        // SOLO manejamos el caso de RESERVA_OK
+        // 1) Validar que no supere el aforo
+        if (msg.num_personas > aforoMax) {
+            procesar_reserva_negada(&msg, "Grupo supera el aforo permitido");
+            continue;
+        }
+
+        // 2) Hora mayor al final de la simulación
+        if (msg.hora_solicitada > horaFinSim || msg.hora_solicitada + 1 > horaFinSim) {
+            procesar_reserva_negada(&msg, "Hora fuera del rango de simulación");
+            continue;
+        }
+
+        // 3) Hora extemporánea (anterior al inicio de simulación actual)
+        if (msg.hora_solicitada < horaIniSim) {
+            int nuevaHora = buscar_bloque_dos_horas(msg.num_personas, horaIniSim);
+            if (nuevaHora != -1) {
+                procesar_reserva_extemporanea(&msg, nuevaHora);
+            } else {
+                procesar_reserva_negada(&msg, "No hay cupo para reprogramar (extemporáneo)");
+            }
+            continue;
+        }
+
+        // 4) Intentar reserva en la hora pedida
         if (puede_reservar_en_hora(msg.hora_solicitada, msg.num_personas)) {
             procesar_reserva_ok(&msg);
+            continue;
+        }
+
+        // 5) Buscar reserva garantizada en otras horas
+        int nuevaHora = buscar_bloque_dos_horas(msg.num_personas, horaIniSim);
+        if (nuevaHora != -1) {
+            procesar_reserva_otras_horas(&msg, nuevaHora);
         } else {
-            // Aquí luego puedes implementar:
-            //  - RESERVA_OTRAS_HORAS
-            //  - RESERVA_EXTEMPORANEA
-            //  - RESERVA_NEGADA
-            printf("[CONTROLADOR] Esta implementación solo maneja reservas OK. "
-                   "Solicitud NO atendida.\n");
+            procesar_reserva_negada(&msg, "Sin cupo en ninguna franja de dos horas");
         }
     }
 
