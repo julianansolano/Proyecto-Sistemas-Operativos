@@ -1,7 +1,11 @@
-1. make
+1. 
+make clean
+make
 
 2. Ejecutar controlador
-./bin/controlador /tmp/pipe_controlador 7 19 10
+./bin/controlador -i <hora_ini> -f <hora_fin> -s <segHoras> -t <aforo> -p <pipe_principal>
+./bin/controlador -i 7 -f 19 -s 1 -t 30 -p /tmp/pipe_reservas
 
 3. Ejecutar un agente
-./bin/agente /tmp/pipe_controlador Agente1 FamiliaX 8 4
+./bin/agente -s <nombre_agente> -a <archivo.csv> -p <pipe_principal>
+./bin/agente -s Agente1 -a data/soli_a1.csv -p /tmp/pipe_reservas
