@@ -9,3 +9,10 @@ make
 3. Ejecutar un agente
 ./bin/agente -s <nombre_agente> -a <archivo.csv> -p <pipe_principal>
 ./bin/agente -s Agente1 -a data/soli_a1.csv -p /tmp/pipe_reservas
+
+
+4. archivos de ejemplo 
+
+FamiliaGrande,8,35    // iv.c: supera aforo (si aforo=30)
+FamiliaTardia,20,5    // iv.a: hora > horaFin (si horaFin=19)
+FamiliaSinCupo,8,25   // iv.b: no hay cupo en ningún bloque
