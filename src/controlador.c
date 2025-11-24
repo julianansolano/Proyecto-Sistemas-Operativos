@@ -201,18 +201,16 @@ static void procesar_reserva_negada(const MensajeReserva *msg, const char *razon
  * Verifica si debe aplicarse "Reserva negada, debe volver otro día"
  * según los criterios iv.a, iv.b, iv.c
  */
+
 static int debe_volver_otro_dia(const MensajeReserva *msg, int hora_actual) {
     // iv.c: El número de personas es mayor al aforo permitido
     if (msg->num_personas > aforoMax) {
         return 1;
-    }
-    
-    // iv.a: La hora solicitada sea mayor a horaFin
-    if (msg->hora_solicitada > horaFinSim) {
+    }  // iv.a: La hora solicitada sea mayor a horaFin
+     if (msg->hora_solicitada > horaFinSim) {
         return 1;
     }
-    
-    // iv.b: No encuentra disponible ningún bloque de 2 horas dentro del periodo
+// iv.b: No encuentra disponible ningún bloque de 2 horas dentro del periodo
     int bloque_encontrado = buscar_bloque_dos_horas(msg->num_personas, hora_actual);
     if (bloque_encontrado == -1) {
         return 1;
@@ -256,6 +254,7 @@ int main(int argc, char *argv[]) {
     horaFinSim  = -1;
     aforoMax    = -1;
     segHorasSim = -1;
+
 
     while ((opt = getopt(argc, argv, "i:f:s:t:p:")) != -1) {
         switch (opt) {
@@ -315,6 +314,9 @@ int main(int argc, char *argv[]) {
            pipe_principal, horaIniSim, horaFinSim, aforoMax, segHorasSim);
     printf("[CONTROLADOR] Esperando solicitudes...\n");
 
+    // ⚠️ Aquí podrías crear un hilo para el reloj que use segHorasSim.
+    // Por ahora solo atendemos solicitudes de los agentes.
+
     while (1) {
         int fd = abrir_pipe_lectura(pipe_principal);
         if (fd == -1) {
@@ -357,7 +359,7 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        // 2) Hora extemporánea (anterior al inicio de simulación actual)
+        // 3) Hora extemporánea (anterior al inicio de simulación actual)
         if (msg.hora_solicitada < horaIniSim) {
             int nuevaHora = buscar_bloque_dos_horas(msg.num_personas, horaIniSim);
             if (nuevaHora != -1) {
@@ -368,13 +370,13 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        // 3) Intentar reserva en la hora pedida
+        // 4) Intentar reserva en la hora pedida
         if (puede_reservar_en_hora(msg.hora_solicitada, msg.num_personas)) {
             procesar_reserva_ok(&msg);
             continue;
         }
 
-        // 4) Buscar reserva garantizada en otras horas
+        // 5) Buscar reserva garantizada en otras horas
         int nuevaHora = buscar_bloque_dos_horas(msg.num_personas, horaIniSim);
         if (nuevaHora != -1) {
             procesar_reserva_otras_horas(&msg, nuevaHora);
