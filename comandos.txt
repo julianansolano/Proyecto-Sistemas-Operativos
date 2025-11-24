@@ -3,9 +3,19 @@ make clean
 make
 
 2. Ejecutar controlador
+wsl: gcc -Wall -Wextra -std=c99 -pthread -Iinclude -o bin/agente src/agente.c src/comunes.c
 ./bin/controlador -i <hora_ini> -f <hora_fin> -s <segHoras> -t <aforo> -p <pipe_principal>
 ./bin/controlador -i 7 -f 19 -s 1 -t 30 -p /tmp/pipe_reservas
 
 3. Ejecutar un agente
 ./bin/agente -s <nombre_agente> -a <archivo.csv> -p <pipe_principal>
 ./bin/agente -s Agente1 -a data/soli_a1.csv -p /tmp/pipe_reservas
+
+./bin/agente -s AgenteTest -a data/test_iv.csv -p /tmp/pipe_reservas
+
+
+4. archivos de ejemplo 
+
+FamiliaGrande,8,35    // iv.c: supera aforo (si aforo=30)
+FamiliaTardia,20,5    // iv.a: hora > horaFin (si horaFin=19)
+FamiliaSinCupo,8,25   // iv.b: no hay cupo en ningún bloque
