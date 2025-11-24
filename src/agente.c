@@ -37,7 +37,7 @@ int main(int argc, char *argv[]) {
             pipe_principal = optarg;
             break;
         default:
-            fprintf(stderr,
+            fprintf(stderr, 
                     "Uso: %s -s <nombre_agente> -a <fileSolicitud> -p <pipe_principal>\n",
                     argv[0]);
             return EXIT_FAILURE;

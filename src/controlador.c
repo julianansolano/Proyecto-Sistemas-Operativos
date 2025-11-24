@@ -6,6 +6,8 @@
 #include "comunes.h"
 #include "../include/estructuras.h"
 
+#include <pthread.h>
+
 #define MAX_HORAS 24
 
 // Variables globales para la simulación
@@ -14,6 +16,26 @@ static int horaFinSim   = 19;  // hora máxima de simulación
 static int aforoMax     = 50;  // personas máximas por hora
 static int segHorasSim  = 1;   // segundos que dura una "hora" de simulación
 static int ocupacion[MAX_HORAS + 2];  // personas por hora
+
+//Pal reloj
+static int horaActual;          // hora actual de la simulación
+static int simulacion_activa = 1;  // bandera para terminar simulación
+
+// Estructura para manejar reservas a nivel de simulación
+typedef struct {
+    char familia[MAX_NOMBRE];
+    int hora_inicio;
+    int hora_fin;   
+    int personas;
+} ReservaActiva;
+
+// Reservas ya aprobadas pero que aún no han "entrado"
+static ReservaActiva reservas_programadas[256];
+static int total_reservas_programadas = 0;
+
+// Reservas de familias que están actualmente en el parque
+static ReservaActiva reservas_en_parque[256];
+static int total_en_parque = 0;
 
 /**
  * Verifica si se puede aceptar la reserva tal cual en la hora solicitada.
@@ -51,12 +73,9 @@ static int buscar_bloque_dos_horas(int numPersonas, int horaInicioBusqueda) {
     }
 
     for (int h = horaInicioBusqueda; h <= horaFinSim - 1; ++h) {
-        // Verificar que ambas horas estén dentro del rango de simulación
-        if (h >= horaIniSim && (h + 1) <= horaFinSim) {
-            if (ocupacion[h] + numPersonas <= aforoMax &&
-                ocupacion[h + 1] + numPersonas <= aforoMax) {
-                return h;
-            }
+        if (ocupacion[h] + numPersonas <= aforoMax &&
+            ocupacion[h + 1] + numPersonas <= aforoMax) {
+            return h;
         }
     }
     return -1;
@@ -82,10 +101,98 @@ static void enviar_respuesta(const MensajeReserva *msg,
     close(fd_resp);
 }
 
+// registrar una reserva aprobada para que el reloj la maneje
+static void registrar_reserva_programada(const MensajeReserva *msg, int hora_asignada) {
+    if (total_reservas_programadas >= 256) {
+        fprintf(stderr, "[CONTROLADOR] Límite de reservas programadas alcanzado\n");
+        return;
+    }
+
+    ReservaActiva r;
+    memset(&r, 0, sizeof(r));
+    strncpy(r.familia, msg->nombre_familia, MAX_NOMBRE - 1);
+    r.hora_inicio = hora_asignada;
+    r.hora_fin    = hora_asignada + 2;   // siempre 2 horas
+    r.personas    = msg->num_personas;
+
+    reservas_programadas[total_reservas_programadas++] = r;
+}
+
+// Familias que salen del parque cuando se cumple su hora_fin
+static void procesar_salidas(void) {
+    for (int i = 0; i < total_en_parque; i++) {
+        if (reservas_en_parque[i].hora_fin == horaActual) {
+            printf("🚪 Sale familia %s (%d personas) a la hora %d\n",
+                   reservas_en_parque[i].familia,
+                   reservas_en_parque[i].personas,
+                   horaActual);
+
+            // Eliminar del arreglo de "en parque"
+            for (int j = i; j < total_en_parque - 1; j++) {
+                reservas_en_parque[j] = reservas_en_parque[j + 1];
+            }
+            total_en_parque--;
+            i--; // revisar la posición que se desplazó
+        }
+    }
+}
+
+// Familias que entran al parque cuando llega su hora_inicio
+static void procesar_entradas(void) {
+    for (int i = 0; i < total_reservas_programadas; i++) {
+        if (reservas_programadas[i].hora_inicio == horaActual) {
+            printf("🏞️ Entra familia %s (%d personas) a la hora %d\n",
+                   reservas_programadas[i].familia,
+                   reservas_programadas[i].personas,
+                   horaActual);
+
+            // Mover la reserva a la lista de "en parque"
+            reservas_en_parque[total_en_parque++] = reservas_programadas[i];
+
+            // Eliminar de reservas_programadas (compactar)
+            for (int j = i; j < total_reservas_programadas - 1; j++) {
+                reservas_programadas[j] = reservas_programadas[j + 1];
+            }
+            total_reservas_programadas--;
+            i--;
+        }
+    }
+}
+
+//Hilo del reloj que avanza la simulación
+static void *hilo_reloj(void *arg) {
+    (void)arg;
+    
+    while (simulacion_activa) {
+        sleep(segHorasSim);  // cada segHorasSim segundos = 1 hora simulada
+
+        horaActual++;
+
+        printf("\n⏰ El reloj señala que ha transcurrido una hora, y son las %d hr.\n",
+               horaActual);
+
+        // Primero salen los que completan sus 2 horas
+        procesar_salidas();
+
+        // Luego entran los que empiezan en esta hora
+        procesar_entradas();
+
+        if (horaActual >= horaFinSim) {
+            simulacion_activa = 0;
+            printf("\n Fin del día. Hora final alcanzada (%d).\n", horaActual);
+        }
+    }
+
+    return NULL;
+}
+
+
 /**
  * Procesa el caso de RESERVA_OK.
  */
 static void procesar_reserva_ok(const MensajeReserva *msg) {
+    registrar_reserva_programada(msg, msg->hora_solicitada);
+
     ocupacion[msg->hora_solicitada]     += msg->num_personas;
     ocupacion[msg->hora_solicitada + 1] += msg->num_personas;
 
@@ -116,6 +223,8 @@ static void procesar_reserva_ok(const MensajeReserva *msg) {
  * Procesa el caso de RESERVA_OTRAS_HORAS.
  */
 static void procesar_reserva_otras_horas(const MensajeReserva *msg, int nuevaHora) {
+    registrar_reserva_programada(msg, nuevaHora);
+
     ocupacion[nuevaHora]     += msg->num_personas;
     ocupacion[nuevaHora + 1] += msg->num_personas;
 
@@ -147,6 +256,8 @@ static void procesar_reserva_otras_horas(const MensajeReserva *msg, int nuevaHor
  * Procesa el caso de RESERVA_EXTEMPORANEA.
  */
 static void procesar_reserva_extemporanea(const MensajeReserva *msg, int nuevaHora) {
+    registrar_reserva_programada(msg, nuevaHora);
+    
     ocupacion[nuevaHora]     += msg->num_personas;
     ocupacion[nuevaHora + 1] += msg->num_personas;
 
@@ -197,54 +308,6 @@ static void procesar_reserva_negada(const MensajeReserva *msg, const char *razon
            razon);
 }
 
-/**
- * Verifica si debe aplicarse "Reserva negada, debe volver otro día"
- * según los criterios iv.a, iv.b, iv.c
- */
-
-static int debe_volver_otro_dia(const MensajeReserva *msg, int hora_actual) {
-    // iv.c: El número de personas es mayor al aforo permitido
-    if (msg->num_personas > aforoMax) {
-        return 1;
-    }  // iv.a: La hora solicitada sea mayor a horaFin
-     if (msg->hora_solicitada > horaFinSim) {
-        return 1;
-    }
-// iv.b: No encuentra disponible ningún bloque de 2 horas dentro del periodo
-    int bloque_encontrado = buscar_bloque_dos_horas(msg->num_personas, hora_actual);
-    if (bloque_encontrado == -1) {
-        return 1;
-    }
-    
-    return 0;
-}
-
-/**
- * Procesa específicamente el caso "Reserva negada, debe volver otro día"
- */
-static void procesar_reserva_volver_otro_dia(const MensajeReserva *msg, const char *razon_especifica) {
-    RespuestaControlador resp;
-    resp.tipo = RESERVA_NEGADA;
-    resp.hora_asignada = -1;
-    
-    snprintf(
-        resp.mensaje,
-        sizeof(resp.mensaje),
-        "Reserva negada para %s. Debe volver otro día. Razón: %s",
-        msg->nombre_familia,
-        razon_especifica
-    );
-    
-    enviar_respuesta(msg, &resp);
-    
-    printf("[CONTROLADOR] RESERVA VOLVER OTRO DÍA -> agente=%s, familia=%s, hora_solicitada=%d, personas=%d, razón=%s\n",
-           msg->nombre_agente,
-           msg->nombre_familia,
-           msg->hora_solicitada,
-           msg->num_personas,
-           razon_especifica);
-}
-
 int main(int argc, char *argv[]) {
     printf("🚀 Controlador de Reservas - Iniciando...\n");
 
@@ -254,7 +317,7 @@ int main(int argc, char *argv[]) {
     horaFinSim  = -1;
     aforoMax    = -1;
     segHorasSim = -1;
-
+    pthread_t th_reloj;       
 
     while ((opt = getopt(argc, argv, "i:f:s:t:p:")) != -1) {
         switch (opt) {
@@ -305,6 +368,10 @@ int main(int argc, char *argv[]) {
         ocupacion[h] = 0;
     }
 
+    // Inicializar hora actual de la simulación
+    horaActual = horaIniSim;
+    simulacion_activa = 1;
+
     // Crear el pipe principal donde escuchará el controlador
     if (crear_pipe(pipe_principal) == -1) {
         return EXIT_FAILURE;
@@ -314,12 +381,22 @@ int main(int argc, char *argv[]) {
            pipe_principal, horaIniSim, horaFinSim, aforoMax, segHorasSim);
     printf("[CONTROLADOR] Esperando solicitudes...\n");
 
+     // Crear hilo del reloj que usará segHorasSim
+    if (pthread_create(&th_reloj, NULL, hilo_reloj, NULL) != 0) {
+        perror("[CONTROLADOR] Error creando hilo del reloj");
+        return EXIT_FAILURE;
+    }
+
+
     // ⚠️ Aquí podrías crear un hilo para el reloj que use segHorasSim.
     // Por ahora solo atendemos solicitudes de los agentes.
 
-    while (1) {
+    while (simulacion_activa) {
         int fd = abrir_pipe_lectura(pipe_principal);
         if (fd == -1) {
+            if (!simulacion_activa) {
+                break;
+            }
             sleep(1);
             continue;
         }
@@ -342,20 +419,15 @@ int main(int argc, char *argv[]) {
                msg.hora_solicitada,
                msg.num_personas);
 
-        // 1) Verificar si aplica "Volver otro día" (condiciones iv.a, iv.b, iv.c)
-        int hora_actual = horaIniSim;
-        if (debe_volver_otro_dia(&msg, hora_actual)) {
-            // Determinar la razón específica
-            const char *razon = "";
-            if (msg.num_personas > aforoMax) {
-                razon = "Grupo supera el aforo permitido";
-            } else if (msg.hora_solicitada > horaFinSim) {
-                razon = "Hora solicitada fuera del rango de simulación";
-            } else {
-                razon = "No hay cupo disponible en ningún bloque de 2 horas";
-            }
-            
-            procesar_reserva_volver_otro_dia(&msg, razon);
+        // 1) Validar que no supere el aforo
+        if (msg.num_personas > aforoMax) {
+            procesar_reserva_negada(&msg, "Grupo supera el aforo permitido");
+            continue;
+        }
+
+        // 2) Hora mayor al final de la simulación
+        if (msg.hora_solicitada > horaFinSim || msg.hora_solicitada + 1 > horaFinSim) {
+            procesar_reserva_negada(&msg, "Hora fuera del rango de simulación");
             continue;
         }
 
@@ -385,5 +457,8 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    pthread_join(th_reloj, NULL);
+
+    printf("Controlador de Reservas termina.\n");
     return EXIT_SUCCESS;
 }
