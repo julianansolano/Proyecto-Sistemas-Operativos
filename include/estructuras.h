@@ -4,16 +4,35 @@
 #define MAX_NOMBRE 50
 #define MAX_PIPE_NAME 100
 
-// Estructura para mensajes entre procesos
+// Tipos de mensajes generales.
+typedef enum {
+    MSG_HOLA,
+    MSG_RESERVA
+} TipoMensaje;
+
+// Mensaje de saludo inicial del agente al controlador.
 typedef struct {
+    TipoMensaje tipo;
+    char nombre_agente[MAX_NOMBRE];
+    char pipe_respuesta[MAX_PIPE_NAME];
+} MensajeHola;
+
+// Estructura para mensajes entre procesos.
+typedef struct {
+    TipoMensaje tipo;
     char nombre_agente[MAX_NOMBRE];
     char nombre_familia[MAX_NOMBRE];
+    char pipe_respuesta[MAX_PIPE_NAME];
     int hora_solicitada;
     int num_personas;
-    char pipe_respuesta[MAX_PIPE_NAME];
 } MensajeReserva;
 
-// Respuestas del controlador
+// Mensaje de bienvenida del controlador al agente.
+typedef struct {
+    int hora_actual;
+} MensajeWelcome;
+
+// Respuestas del controlador.
 typedef enum {
     RESERVA_OK,
     RESERVA_OTRAS_HORAS,
@@ -21,6 +40,7 @@ typedef enum {
     RESERVA_NEGADA
 } TipoRespuesta;
 
+// Estructura para respuestas del controlador.
 typedef struct {
     TipoRespuesta tipo;
     int hora_asignada;

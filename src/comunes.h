@@ -8,7 +8,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
-// Funciones comunes
+// Funciones comunes.
 int crear_pipe(const char *nombre);
 int abrir_pipe_escritura(const char *nombre);
 int abrir_pipe_lectura(const char *nombre);
