@@ -24,7 +24,7 @@ typedef enum {
 typedef struct {
     TipoRespuesta tipo;
     int hora_asignada;
-    char mensaje[100];
+    char mensaje[300];
 } RespuestaControlador;
 
 #endif
