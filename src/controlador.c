@@ -373,6 +373,25 @@ static void reporte_final(void) {
     printf("\n===========================\n");
 }
 
+// Enviar mensaje FIN a todos los agentes al terminar la simulación (no bloqueante).
+static void enviar_fin_agentes(void) {
+    for (int i = 0; i < total_agentes; i++) {
+        const char *pipe_ag = pipes_agentes[i];
+        if (!pipe_ag || pipe_ag[0] == '\0') continue;
+
+        int fd = open(pipe_ag, O_WRONLY | O_NONBLOCK);
+        if (fd == -1) {
+            // No hay lector o pipe ya eliminado; saltar sin bloquear.
+            continue;
+        }
+
+        // Intentamos escribir FIN; si falla con EPIPE lo ignoramos.
+        ssize_t w = write(fd, "FIN", 3);
+        (void)w;
+        close(fd);
+    }
+}
+
 // Programa principal.
 int main(int argc, char *argv[]) {
     printf("🚀 Controlador - Iniciando...\n");
@@ -408,6 +427,15 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
+    /* Exigir que el controlador avance al menos cada 2 segundos.
+     * El enunciado indica que el agente debe esperar 2 segundos entre
+     * solicitudes; para cumplirlo sin que las solicitudes queden
+     * extemporáneas, requerimos segHorasSim >= 2. */
+    if (segHorasSim < 2) {
+        fprintf(stderr, "Parámetro -s demasiado bajo (%d). Debe ser >= 2.\n", segHorasSim);
+        return EXIT_FAILURE;
+    }
+
     for (int i = 0; i < MAX_HORAS+2; i++) {
         ocupacion[i] = 0;
     }
@@ -433,6 +461,9 @@ int main(int argc, char *argv[]) {
     // Forzar cancelación del hilo de recepción
     pthread_cancel(thRecv);
     pthread_detach(thRecv);
+
+    // Intentar notificar FIN a los agentes (best-effort, no bloqueante)
+    enviar_fin_agentes();
 
     reporte_final();
 

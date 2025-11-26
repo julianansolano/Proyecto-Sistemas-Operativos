@@ -172,6 +172,8 @@ int main(int argc, char *argv[]) {
         msg.hora_solicitada = hora;
         msg.num_personas = personas;
 
+            // Esperar 2 segundos antes de enviar la siguiente, según enunciado.
+            sleep(2);
         // Enviar mensaje de reserva al controlador.
         if (write(fd_envio, &msg, sizeof(msg)) != sizeof(msg)) {
             perror("[AGENTE] Error enviando mensaje");
@@ -230,6 +232,9 @@ int main(int argc, char *argv[]) {
     // Cerrar archivo de solicitudes.
     fclose(file);
     printf("Agente %s termina.\n", nombre_agente);
+
+    /* Limpieza: eliminar pipe de respuesta creado por el agente. */
+    unlink(pipe_respuesta);
 
     return EXIT_SUCCESS;
 }
