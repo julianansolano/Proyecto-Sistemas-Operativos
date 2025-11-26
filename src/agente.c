@@ -231,7 +231,22 @@ int main(int argc, char *argv[]) {
 
     // Cerrar archivo de solicitudes.
     fclose(file);
-    printf("Agente %s termina.\n", nombre_agente);
+    printf("[AGENTE:%s] Todas las solicitudes procesadas. Esperando FIN del controlador...\n", nombre_agente);
+
+    // Esperar FIN del controlador (bloqueante). Abrimos el pipe de respuesta para lectura.
+    int fd_fin = abrir_pipe_lectura(pipe_respuesta);
+    if (fd_fin != -1) {
+        char finbuf[4] = {0};
+        ssize_t r = read(fd_fin, finbuf, 3);
+        close(fd_fin);
+        if (r == 3 && strcmp(finbuf, "FIN") == 0) {
+            printf("[AGENTE:%s] FIN recibido. Terminando.\n", nombre_agente);
+        } else {
+            printf("[AGENTE:%s] No se recibió FIN correctamente (r=%zd). Finalizando de todas formas.\n", nombre_agente, r);
+        }
+    } else {
+        fprintf(stderr, "[AGENTE:%s] No se pudo abrir pipe de fin %s. Eliminando pipe y saliendo.\n", nombre_agente, pipe_respuesta);
+    }
 
     /* Limpieza: eliminar pipe de respuesta creado por el agente. */
     unlink(pipe_respuesta);

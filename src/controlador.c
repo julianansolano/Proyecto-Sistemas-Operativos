@@ -379,15 +379,15 @@ static void enviar_fin_agentes(void) {
         const char *pipe_ag = pipes_agentes[i];
         if (!pipe_ag || pipe_ag[0] == '\0') continue;
 
-        int fd = open(pipe_ag, O_WRONLY | O_NONBLOCK);
+        // Abrir en modo bloqueante: el agente estará esperando lectura.
+        int fd = open(pipe_ag, O_WRONLY);
         if (fd == -1) {
-            // No hay lector o pipe ya eliminado; saltar sin bloquear.
+            // No hay lector o pipe ya eliminado; saltar.
             continue;
         }
 
-        // Intentamos escribir FIN; si falla con EPIPE lo ignoramos.
-        ssize_t w = write(fd, "FIN", 3);
-        (void)w;
+        // Escribir FIN (bloqueante si necesario). Ignoramos errores locales.
+        (void)write(fd, "FIN", 3);
         close(fd);
     }
 }
@@ -455,14 +455,11 @@ int main(int argc, char *argv[]) {
     // Activar flag de terminación
     debe_terminar = 1;
     
-    // Dar tiempo breve para que el hilo de recepción termine naturalmente
-    sleep(1);
-    
-    // Forzar cancelación del hilo de recepción
-    pthread_cancel(thRecv);
-    pthread_detach(thRecv);
+    // Indicar al hilo de recepción que debe terminar y esperar a que lo haga
+    debe_terminar = 1;
+    pthread_join(thRecv, NULL);
 
-    // Intentar notificar FIN a los agentes (best-effort, no bloqueante)
+    // Enviar FIN a todos los agentes (ahora los agentes estarán esperando la notificación)
     enviar_fin_agentes();
 
     reporte_final();
