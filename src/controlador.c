@@ -30,6 +30,9 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <getopt.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <time.h>
 #include "comunes.h"
 #include "../include/estructuras.h"
 
@@ -59,6 +62,9 @@ static const char *pipe_principal = NULL;
 
 // Reloj global.
 static int hora_actual = 0;
+
+// Flag de terminación
+static volatile int debe_terminar = 0;
 
 // Mutex para proteger acceso concurrente.
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -200,23 +206,46 @@ void *hiloReloj(void *arg) {
 void *hiloRecepcion(void *arg) {
     (void)arg;
 
-    while (1) {
+    // Habilitar cancelación asíncrona del hilo
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+
+    // Abrir el pipe principal UNA SOLA VEZ
+    int fd = abrir_pipe_lectura(pipe_principal);
+    if (fd == -1) {
+        fprintf(stderr, "[CONTROLADOR] Error abriendo pipe principal\n");
+        return NULL;
+    }
+
+    // Ahora cambiar a modo NO BLOQUEANTE para las lecturas
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+    while (!debe_terminar) {
+        // ¿Ya se acabó la simulación?
         pthread_mutex_lock(&mutex);
-        if (hora_actual > horaFinSim) {
-            pthread_mutex_unlock(&mutex);
-            break;
-        }
+        int fin = (hora_actual > horaFinSim);
         pthread_mutex_unlock(&mutex);
 
-        int fd = abrir_pipe_lectura(pipe_principal);
-        if (fd == -1) continue;
+        if (fin) {
+            break;
+        }
 
         // Leer el tipo de mensaje primero.
         TipoMensaje tipo;
         ssize_t r = read(fd, &tipo, sizeof(tipo));
 
+        if (r == -1 && errno == EAGAIN) {
+            // No había datos aún
+            struct timespec ts = {0, 50000000}; // 50ms
+            nanosleep(&ts, NULL);
+            continue;
+        }
+
         if (r != sizeof(tipo)) {
-            close(fd);
+            // Lectura incompleta o EOF
+            struct timespec ts = {0, 50000000}; // 50ms
+            nanosleep(&ts, NULL);
             continue;
         }
 
@@ -226,7 +255,6 @@ void *hiloRecepcion(void *arg) {
 
             // Ya leímos el campo "tipo", faltan los demás bytes.
             ssize_t r2 = read(fd, ((char*)&hola) + sizeof(tipo), sizeof(hola) - sizeof(tipo));
-            close(fd);
 
             if (r2 != sizeof(hola) - sizeof(tipo)) {
                 continue;
@@ -256,7 +284,6 @@ void *hiloRecepcion(void *arg) {
 
             // Ya leímos el campo "tipo", faltan los demás bytes.
             ssize_t r2 = read(fd, ((char*)&msg) + sizeof(tipo), sizeof(msg) - sizeof(tipo));
-            close(fd);
 
             if (r2 != sizeof(msg) - sizeof(tipo)) {
                 continue;
@@ -312,20 +339,10 @@ void *hiloRecepcion(void *arg) {
         }
         // Mensaje desconocido.
         printf("[CONTROLADOR] Mensaje desconocido recibido.\n");
-        close(fd);
     }
+    
+    close(fd);
     return NULL;
-}
-
-// Enviar mensaje FIN a todos los agentes al terminar la simulación.
-static void enviar_fin_agentes(void) {
-    for (int i = 0; i < total_agentes; i++) {
-        int fd = abrir_pipe_escritura(pipes_agentes[i]);
-        if (fd != -1) {
-            write(fd, "FIN", 3);
-            close(fd);
-        }
-    }
 }
 
 // Reporte final al terminar la simulación.
@@ -342,6 +359,7 @@ static void reporte_final(void) {
         if (ocupacion[h] < min) min = ocupacion[h];
     }
 
+    printf("\nHoras pico (%d): ", max);
     for (int h = horaIniSim; h <= horaFinSim; h++) {
         if (ocupacion[h] == max) printf("%d ", h);
     }
@@ -403,11 +421,19 @@ int main(int argc, char *argv[]) {
     pthread_create(&thReloj, NULL, hiloReloj, NULL);
     pthread_create(&thRecv,  NULL, hiloRecepcion, NULL);
 
+    // Esperar a que termine el hilo de reloj
     pthread_join(thReloj, NULL);
-    pthread_join(thRecv,  NULL);
+    
+    // Activar flag de terminación
+    debe_terminar = 1;
+    
+    // Dar tiempo breve para que el hilo de recepción termine naturalmente
+    sleep(1);
+    
+    // Forzar cancelación del hilo de recepción
+    pthread_cancel(thRecv);
+    pthread_detach(thRecv);
 
-    // Enviar FIN a todos los agentes.
-    enviar_fin_agentes();
     reporte_final();
 
     unlink(pipe_principal);

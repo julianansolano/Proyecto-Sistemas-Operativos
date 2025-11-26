@@ -225,9 +225,6 @@ int main(int argc, char *argv[]) {
                     nombre_agente, respuesta.mensaje, respuesta.tipo, respuesta.hora_asignada);
             break;
         }
-
-        // Esperar 2 segundos antes de enviar la siguiente.
-        sleep(2);
     }
 
     // Cerrar archivo de solicitudes.
